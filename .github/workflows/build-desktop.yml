@@ -54,7 +54,6 @@ jobs:
         working-directory: src/windows-client
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,6 +77,7 @@ jobs:
       - run: npm run typecheck
       - name: Native engine
         run: node scripts/build-native.cjs --arch=${{ matrix.arch }}
+      - run: npm run build:main
       - name: Regression tests
         if: matrix.arch != 'ia32'
         run: npm test -- --reporter=dot
