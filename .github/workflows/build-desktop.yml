@@ -91,6 +91,9 @@ jobs:
       - name: Regression tests
         if: matrix.arch != 'ia32'
         run: npm test -- --reporter=dot
+      - name: Ext4 parser coverage with independent fixtures
+        if: matrix.platform == 'linux'
+        run: pnpm exec vitest run src/main/__tests__/ext4.test.ts src/main/__tests__/ext4-production.test.ts --coverage --coverage.include=src/main/filesystems/ext4.ts --coverage.thresholds.lines=80 --coverage.thresholds.statements=80 --coverage.thresholds.functions=80 --coverage.thresholds.branches=80
       - name: Build application
         run: npm run build:prod
       - name: GUI recovery smoke on Linux
