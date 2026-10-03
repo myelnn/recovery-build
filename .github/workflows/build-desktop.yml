@@ -1,0 +1,102 @@
+name: Build desktop
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character SHA in private myelnn/recovery
+        required: true
+        type: string
+      platforms:
+        description: Platforms to build
+        type: choice
+        default: all
+        options: [all, linux, macos, windows]
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.event.inputs.source_sha }}-${{ github.event.inputs.platforms }}
+  cancel-in-progress: false
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      include: ${{ steps.select.outputs.include }}
+    steps:
+      - id: select
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          assert re.fullmatch(r'[0-9a-f]{40}', os.environ['SOURCE_SHA']), 'Invalid source SHA'
+          targets = [
+            {'os':'ubuntu-24.04','platform':'linux','arch':'x64'},
+            {'os':'macos-15','platform':'macos','arch':'arm64'},
+            {'os':'macos-15-intel','platform':'macos','arch':'x64'},
+            {'os':'windows-2022','platform':'windows','arch':'x64'},
+            {'os':'windows-2022','platform':'windows','arch':'ia32'}]
+          selected = os.environ['PLATFORMS']
+          assert selected in ['all','linux','macos','windows'], 'Invalid platforms'
+          targets = [t for t in targets if selected == 'all' or t['platform'] == selected]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f: f.write('include=' + json.dumps(targets) + '\n')
+          PY
+  build:
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src/windows-client
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          path: src
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+          run_install: false
+      - name: Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libarchive-tools rpm libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 xvfb
+      - run: pnpm install --frozen-lockfile
+      - run: npm ci --prefix native --ignore-scripts
+      - run: npm run typecheck
+      - name: Native engine
+        run: node scripts/build-native.cjs --arch=${{ matrix.arch }}
+      - name: Regression tests
+        if: matrix.arch != 'ia32'
+        run: npm test -- --reporter=dot
+      - name: Build application
+        run: npm run build:prod
+      - name: Package macOS
+        if: matrix.platform == 'macos'
+        run: pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never
+      - name: Package Linux
+        if: matrix.platform == 'linux'
+        run: pnpm exec electron-builder --linux --${{ matrix.arch }} --publish never
+      - name: Package Windows
+        if: matrix.platform == 'windows'
+        run: pnpm exec electron-builder --win --${{ matrix.arch }} --publish never
+      - name: Stage binary artifacts only
+        run: node scripts/stage-release.cjs --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recovery-${{ matrix.platform }}-${{ matrix.arch }}-${{ inputs.source_sha }}
+          path: src/windows-client/release/public/*
+          if-no-files-found: error
+          retention-days: 14
