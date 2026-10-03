@@ -75,6 +75,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: npm ci --prefix native --ignore-scripts
       - run: npm run typecheck
+      - name: Packaging dependency tests
+        run: npm run test:packaging
       - name: Native engine
         run: node scripts/build-native.cjs --arch=${{ matrix.arch }}
       - run: npm run build:main
@@ -100,3 +102,54 @@ jobs:
           path: src/windows-client/release/public/*
           if-no-files-found: error
           retention-days: 14
+  release:
+    needs: build
+    if: inputs.platforms == 'all'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: recovery-*-${{ inputs.source_sha }}
+          path: artifacts
+      - name: Verify and collect installers
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib, shutil
+          source = pathlib.Path('artifacts')
+          output = pathlib.Path('installers'); output.mkdir()
+          hashes = []
+          bundles = list(source.iterdir())
+          assert len(bundles) == 5, 'All five target artifacts are required'
+          for bundle in bundles:
+            assert bundle.is_dir() and not bundle.is_symlink()
+            for line in (bundle / 'SHA256SUMS.txt').read_text().splitlines():
+              digest, name = line.split('  ', 1)
+              assert '/' not in name and '\\' not in name and name.endswith(('.exe','.dmg','.zip','.deb','.AppImage'))
+              file = bundle / name
+              assert file.is_file() and not file.is_symlink()
+              assert hashlib.sha256(file.read_bytes()).hexdigest() == digest, 'Installer checksum mismatch'
+              assert not (output / name).exists(), 'Duplicate installer name'
+              shutil.copyfile(file, output / name); hashes.append(line)
+          assert len(hashes) == 8, 'Expected two Windows, four macOS and two Linux installers'
+          (output / 'SHA256SUMS.txt').write_text('\n'.join(sorted(hashes)) + '\n')
+          PY
+      - name: Publish image recovery beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          TAG="image-beta-${SOURCE_SHA:0:12}"
+          cat > release-notes.md <<EOF
+          镜像恢复测试版。源码版本：$SOURCE_SHA
+
+          Windows x64/ia32；macOS 13+ Apple Silicon/Intel；Linux x64 AppImage/deb。
+          Mac/Linux 当前支持平面 .img/.dd/.raw 镜像；设备直接扫描、APFS/ext4 专项元数据恢复尚未开放。Mac 包未签名/公证。
+          安装前可核对 SHA256SUMS.txt。工作流已验证原生模块和镜像扫描、预览、恢复测试。
+          EOF
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" installers/* --repo "$GITHUB_REPOSITORY" --prerelease --title "跨平台镜像恢复测试版 $TAG" --notes-file release-notes.md
+          fi
