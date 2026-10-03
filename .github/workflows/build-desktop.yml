@@ -71,7 +71,7 @@ jobs:
           run_install: false
       - name: Linux packaging dependencies
         if: matrix.platform == 'linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y libarchive-tools rpm libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 xvfb
+        run: sudo apt-get update -qq && sudo apt-get install -y libarchive-tools rpm libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 xvfb e2fsprogs
       - run: pnpm install --frozen-lockfile
       - run: npm ci --prefix native --ignore-scripts
       - run: npm run typecheck
@@ -80,6 +80,10 @@ jobs:
       - name: Native engine
         run: node scripts/build-native.cjs --arch=${{ matrix.arch }}
       - run: npm run build:main
+      - name: Independent ext4 fixtures
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: echo "EXT4_FIXTURE_MANIFEST=$(node scripts/create-ext4-fixtures.cjs)" >> "$GITHUB_ENV"
       - name: Regression tests
         if: matrix.arch != 'ia32'
         run: npm test -- --reporter=dot
