@@ -54,6 +54,7 @@ jobs:
         working-directory: src/windows-client
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      EXT4_REQUIRE_FIXTURES: ${{ matrix.platform == 'linux' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,7 +84,10 @@ jobs:
       - name: Independent ext4 fixtures
         if: matrix.platform == 'linux'
         shell: bash
-        run: echo "EXT4_FIXTURE_MANIFEST=$(node scripts/create-ext4-fixtures.cjs)" >> "$GITHUB_ENV"
+        run: |
+          fixture_manifest=$(node scripts/create-ext4-fixtures.cjs)
+          test -n "$fixture_manifest" && test -f "$fixture_manifest"
+          echo "EXT4_FIXTURE_MANIFEST=$fixture_manifest" >> "$GITHUB_ENV"
       - name: Regression tests
         if: matrix.arch != 'ia32'
         run: npm test -- --reporter=dot
