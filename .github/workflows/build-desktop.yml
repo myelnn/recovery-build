@@ -161,7 +161,7 @@ jobs:
           镜像恢复测试版。源码版本：$SOURCE_SHA
 
           Windows x64/ia32；macOS 13+ Apple Silicon/Intel；Linux x64 AppImage/deb。
-          Mac/Linux 当前支持平面 .img/.dd/.raw 镜像；设备直接扫描、APFS/ext4 专项元数据恢复尚未开放。Mac 包未签名/公证。
+          Mac/Linux 当前支持平面 .img/.dd/.raw 镜像，以及经验证的 ext4 extent 元数据子集；设备直接扫描、JBD2 历史和 APFS 元数据恢复尚未开放。Mac 包未签名/公证。
           安装前可核对 SHA256SUMS.txt。工作流已验证原生模块和镜像扫描、预览、恢复测试。
           EOF
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
