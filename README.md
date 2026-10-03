@@ -6,4 +6,4 @@
 
 目标：Windows x64/ia32，macOS 13+ Apple Silicon/Intel，Linux x64 AppImage/deb。下载成功运行的 Artifacts 后核对 SHA256SUMS.txt。
 
-初期 Mac 安装包为未签名测试版；正式分发需完成 Developer ID 签名和公证。Linux 镜像读取无需管理员权限；设备权限受系统控制，不能以 root 启动整个界面绕过授权。APFS/ext4 的专项恢复以应用能力表和测试报告为准。
+初期为镜像恢复测试版：支持平面 `.img/.dd/.raw`，Unix 设备直接恢复尚未开放。Mac 安装包未签名；正式分发需完成 Developer ID 签名和公证。镜像读取无需管理员权限，不能以 root 启动整个界面绕过授权。APFS/ext4 的专项恢复以应用能力表和测试报告为准。
