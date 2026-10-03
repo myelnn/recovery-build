@@ -85,6 +85,12 @@ jobs:
         run: npm test -- --reporter=dot
       - name: Build application
         run: npm run build:prod
+      - name: GUI recovery smoke on Linux
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a pnpm exec playwright test tests/e2e/electron.spec.ts --reporter=list
+      - name: GUI recovery smoke on macOS and Windows
+        if: matrix.platform != 'linux' && matrix.arch != 'ia32'
+        run: pnpm exec playwright test tests/e2e/electron.spec.ts --reporter=list
       - name: Package macOS
         if: matrix.platform == 'macos'
         run: pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never
