@@ -7,3 +7,5 @@
 目标：Windows x64/ia32，macOS 13+ Apple Silicon/Intel，Linux x64 AppImage/deb。完整矩阵全部通过后发布 [Releases](https://github.com/myelnn/recovery-build/releases) 测试版及 SHA256SUMS.txt；单平台构建保留 14 天 Artifacts。下载后可核对 SHA-256。
 
 初期为镜像恢复测试版：支持平面 `.img/.dd/.raw`，Unix 设备直接恢复尚未开放。Mac 安装包未签名；正式分发需完成 Developer ID 签名和公证。镜像读取无需管理员权限，不能以 root 启动整个界面绕过授权。APFS/ext4 的专项恢复以应用能力表和测试报告为准。
+
+后续测试版增加限定 ext4 元数据解析：可提取现存文件和保留可验证 extent 的删除候选，恢复碎片与稀疏区。原文件名缺失时使用生成名称；尚不包含 JBD2 历史、完整内核误删和 APFS 元数据恢复。Linux 构建使用 e2fsprogs 独立镜像验证原件哈希，并在安装包内重验生产 Worker 链。
