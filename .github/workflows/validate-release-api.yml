@@ -1,0 +1,80 @@
+name: Validate release API
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact private source SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-api-${{ inputs.source_sha }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: artifact-test-only
+          MYSQL_DATABASE: recovery_artifact_test
+        ports: ['3306:3306']
+        options: --health-cmd="mysqladmin ping -h 127.0.0.1 -partifact-test-only" --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - name: Validate source identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: python3 -c 'import os,re; assert re.fullmatch("[0-9a-f]{40}",os.environ["SOURCE_SHA"])'
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          path: src
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          persist-credentials: false
+      - name: Verify checked-out source
+        working-directory: src
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+          run_install: false
+      - name: API tests, actual migration and coverage gate
+        working-directory: src/backend
+        env:
+          ARTIFACT_TEST_JDBC_URL: jdbc:mysql://127.0.0.1:3306/recovery_artifact_test?useSSL=false&allowPublicKeyRetrieval=true
+          ARTIFACT_TEST_DB_USER: root
+          ARTIFACT_TEST_DB_PASSWORD: artifact-test-only
+          REQUIRE_ARTIFACT_DB_TESTS: '1'
+        # Never invoke package/verify: this repository has an existing remote Docker package hook.
+        run: mvn -B -ntp test jacoco:report jacoco:check
+      - name: Website install
+        working-directory: src/frontend
+        run: npm ci --ignore-scripts
+      - name: Website checks
+        working-directory: src/frontend
+        run: |
+          npx tsc --noEmit --incremental false
+          npm run test:artifacts
+          npx playwright install --with-deps chromium
+          npx playwright test --config playwright.artifacts.config.ts
+      - name: Admin install and production compile
+        working-directory: src/admin
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          npx vite build
+      - name: Check admin changed modules
+        working-directory: src/admin
+        run: node scripts/check-artifact-types.mjs
