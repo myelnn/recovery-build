@@ -14,4 +14,6 @@
 
 官网只展示验收通过的正式下载。beta 选择器默认关闭，仅隔离预览构建可显式开启；API 验证同时检查预览流程和官网禁止 beta 的中英文流程。已有测试包仍以 prerelease 保存，正式版须满足专项验收条件后另行构建发布。
 
+**Build signed candidate** 默认检查发行凭据，缺配置立即失败。完整候选模式要求新版本与精确私有提交一致，执行 Windows Authenticode、Mac Developer ID/Apple 公证与 final DMG staple，给最终包生成 GitHub OIDC Sigstore 来源证明，再在五个全新 runner 上核验签名、安装后 GUI/原生恢复和卸载。八包全部通过才汇总并签署验收和校验清单；只保存候选 Artifacts，不自动发布正式版或更新官网。Linux 的 Sigstore 证明用于下载来源验证，不代替 APT 仓库签名。正式范围及现场验收须另行完成。
+
 后续测试版增加限定 ext4 元数据解析：可提取现存文件和保留可验证 extent 的删除候选，恢复碎片与稀疏区。原文件名缺失时使用生成名称；尚不包含 JBD2 历史、完整内核误删和 APFS 元数据恢复。Linux 构建使用 e2fsprogs 独立镜像验证原件哈希，并在安装包内重验生产 Worker 链。
