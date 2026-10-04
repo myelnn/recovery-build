@@ -1,0 +1,65 @@
+name: Verify downloaded installers
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact private harness source SHA (tests existing image beta; never publishes)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  installed:
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, platform: windows, arch: x64 }
+          - { os: windows-2022, platform: windows, arch: ia32 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+          - { os: macos-15-intel, platform: mac, arch: x64 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: src
+        shell: bash
+    steps:
+      - name: Validate exact source SHA
+        working-directory: .
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: python -c 'import os,re; assert re.fullmatch("[0-9a-f]{40}",os.environ["SOURCE_SHA"])'
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          path: src
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          persist-credentials: false
+      - name: Verify harness checkout
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Linux GUI dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 xvfb
+      - name: Install isolated GUI test driver
+        run: npm install --prefix "$RUNNER_TEMP/installer-driver" --ignore-scripts --no-audit --no-fund @playwright/test@1.63.0
+      - name: Installer verification guards
+        run: node --test packaging/tests/verify-installers.test.cjs
+      - name: Linux downloaded install, GUI, recovery and removal
+        if: matrix.platform == 'linux'
+        env:
+          INSTALLER_PLAYWRIGHT_ROOT: ${{ runner.temp }}/installer-driver
+        run: xvfb-run -a node packaging/verify-installers.cjs linux x64
+      - name: macOS and Windows downloaded install, GUI, recovery and removal
+        if: matrix.platform != 'linux'
+        env:
+          INSTALLER_PLAYWRIGHT_ROOT: ${{ runner.temp }}/installer-driver
+        run: node packaging/verify-installers.cjs ${{ matrix.platform }} ${{ matrix.arch }}
+      # No uploads, publication, production deployment or stable metadata changes.
