@@ -2,6 +2,8 @@
 
 本仓只保存构建工作流，应用源码位于私有 `myelnn/recovery`。参考 `myelnn/robovai-build` 的源码与打包分离方式。
 
+**Validate release API** 使用同样的精确私有源码 SHA，验证发布权限、架构选择、独立 MySQL 迁移、网站浏览器流程与后台生产构建。该流程只执行测试，不部署服务或发布数据库记录，不上传源码和测试报告附件。
+
 维护者通过 **Actions → Build desktop → Run workflow** 输入私有源码的完整 40 位提交 SHA。构建仓使用只读部署密钥，不能推送源码。工作流不会响应外部 PR，也不上传源码、源映射、测试镜像或依赖缓存。
 
 目标：Windows x64/ia32，macOS 13+ Apple Silicon/Intel，Linux x64 AppImage/deb。完整矩阵全部通过后发布 [Releases](https://github.com/myelnn/recovery-build/releases) 测试版及 SHA256SUMS.txt；单平台构建保留 14 天 Artifacts。下载后可核对 SHA-256。
