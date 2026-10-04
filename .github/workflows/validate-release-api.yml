@@ -70,12 +70,14 @@ jobs:
           npm run test:artifacts
           npx playwright install --with-deps chromium
           npx playwright test --config playwright.artifacts.config.ts
+          npx playwright test --config playwright.official.config.ts
       - name: Website production compile with local fixture API
         working-directory: src/frontend
         env:
           NEXT_PUBLIC_API_URL: http://127.0.0.1:3086/api
           NEXT_TELEMETRY_DISABLED: '1'
           ARTIFACT_FIXTURE_API_ONLY: '1'
+          NEXT_PUBLIC_ARTIFACT_BETA_ENABLED: 'false'
         run: |
           node --experimental-strip-types tests/artifact-fixture-server.mjs > /tmp/artifact-api-fixture.log 2>&1 &
           fixture_pid=$!
