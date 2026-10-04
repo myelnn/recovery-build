@@ -51,6 +51,11 @@ jobs:
         with:
           version: 10.15.0
           run_install: false
+      - name: Deployment and installer guard tests
+        working-directory: src
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+          node --test packaging/tests/verify-installers.test.cjs
       - name: API tests, actual migration and coverage gate
         working-directory: src/backend
         env:
