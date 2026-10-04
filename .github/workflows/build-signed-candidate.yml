@@ -1,0 +1,339 @@
+name: Build signed candidate
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character private myelnn/recovery commit
+        required: true
+        type: string
+      mode:
+        description: Check credentials or build all eight signed candidate packages
+        type: choice
+        default: credentials
+        options: [credentials, candidate]
+      release_version:
+        description: Committed application version newer than 1.5.0 (candidate mode)
+        type: string
+        default: '1.6.0'
+      recovery_scope:
+        description: Only the independently accepted image recovery scope is supported
+        type: choice
+        default: image
+        options: [image]
+permissions:
+  contents: read
+concurrency:
+  group: signed-${{ inputs.source_sha }}
+  cancel-in-progress: false
+jobs:
+  provenance_probe:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          path: src
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Create an independent provenance verification fixture
+        run: node -e "require('node:fs').writeFileSync('provenance-probe.txt','Signing pipeline verification fixture; not a product installer.\n',{flag:'wx'})"
+      - name: Sign the verification fixture with OIDC
+        id: probe
+        uses: actions/attest@v4
+        with:
+          subject-path: provenance-probe.txt
+          show-summary: false
+      - name: Verify the live Sigstore trust chain and reject byte tampering
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_PATH: ${{ steps.probe.outputs.bundle-path }}
+        run: |
+          node -e "require('./src/packaging/verify-signatures.cjs').verifyProvenance('provenance-probe.txt',process.env.BUNDLE_PATH,process.env.GITHUB_SHA)"
+          node -e "require('node:fs').appendFileSync('provenance-probe.txt','tampered'); require('node:assert/strict').throws(()=>require('./src/packaging/verify-signatures.cjs').verifyProvenance('provenance-probe.txt',process.env.BUNDLE_PATH,process.env.GITHUB_SHA)); console.log('Modified bytes correctly rejected')"
+  preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          path: src
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check source identity and signing guards
+        working-directory: src
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          node -e "const a=require('node:assert/strict'); a.match(process.env.SOURCE_SHA,/^[a-f0-9]{40}$/); a.equal(require('node:child_process').execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),process.env.SOURCE_SHA)"
+          node --test packaging/tests/signing-policy.test.cjs packaging/tests/verify-installers.test.cjs
+      - name: Signing credential preflight (no values logged)
+        working-directory: src
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RECOVERY_SCOPE: ${{ inputs.recovery_scope }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WINDOWS_PUBLISHER_NAME: ${{ vars.WINDOWS_PUBLISHER_NAME || secrets.WINDOWS_PUBLISHER_NAME }}
+          WINDOWS_CERT_SHA256: ${{ vars.WINDOWS_CERT_SHA256 || secrets.WINDOWS_CERT_SHA256 }}
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY || secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+          MAC_CERT_SHA256: ${{ vars.MAC_CERT_SHA256 || secrets.MAC_CERT_SHA256 }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID || secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER || secrets.APPLE_API_ISSUER }}
+          PREFLIGHT_MODE: ${{ inputs.mode }}
+        run: node packaging/signing-preflight.cjs ${{ inputs.mode == 'candidate' && '--candidate' || '' }}
+  build:
+    needs: [preflight, provenance_probe]
+    if: inputs.mode == 'candidate'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, builder_platform: linux, arch: x64 }
+          - { os: macos-15, platform: mac, builder_platform: macos, arch: arm64 }
+          - { os: macos-15-intel, platform: mac, builder_platform: macos, arch: x64 }
+          - { os: windows-2022, platform: windows, builder_platform: windows, arch: x64 }
+          - { os: windows-2022, platform: windows, builder_platform: windows, arch: ia32 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        working-directory: src/windows-client
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      RECOVERY_SCOPE: ${{ inputs.recovery_scope }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      EXT4_REQUIRE_FIXTURES: ${{ matrix.platform == 'linux' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          path: src
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+          run_install: false
+      - name: Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libarchive-tools rpm libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 xvfb e2fsprogs
+      - run: pnpm install --frozen-lockfile
+      - run: npm ci --prefix native --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run test:packaging
+      - run: node scripts/build-native.cjs --arch=${{ matrix.arch }}
+      - run: npm run build:main
+      - name: Independent ext4 fixtures
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          fixture_manifest=$(node scripts/create-ext4-fixtures.cjs)
+          test -n "$fixture_manifest" && test -f "$fixture_manifest"
+          echo "EXT4_FIXTURE_MANIFEST=$fixture_manifest" >> "$GITHUB_ENV"
+      - name: Recovery regression tests
+        if: matrix.arch != 'ia32'
+        run: npm test -- --reporter=dot
+      - name: Ext4 production coverage
+        if: matrix.platform == 'linux'
+        run: pnpm exec vitest run src/main/__tests__/ext4.test.ts src/main/__tests__/ext4-production.test.ts --coverage --coverage.include=src/main/filesystems/ext4.ts --coverage.thresholds.lines=80 --coverage.thresholds.statements=80 --coverage.thresholds.functions=80 --coverage.thresholds.branches=80
+      - run: npm run build:prod
+      - name: Linux GUI recovery
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a pnpm exec playwright test tests/e2e/electron.spec.ts --reporter=list
+      - name: macOS and Windows GUI recovery
+        if: matrix.platform != 'linux' && matrix.arch != 'ia32'
+        run: pnpm exec playwright test tests/e2e/electron.spec.ts --reporter=list
+      - name: Sign Windows application and NSIS installer
+        if: matrix.platform == 'windows'
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WINDOWS_PUBLISHER_NAME: ${{ vars.WINDOWS_PUBLISHER_NAME || secrets.WINDOWS_PUBLISHER_NAME }}
+          WINDOWS_CERT_SHA256: ${{ vars.WINDOWS_CERT_SHA256 || secrets.WINDOWS_CERT_SHA256 }}
+        run: pnpm exec electron-builder --win --${{ matrix.arch }} --config ../packaging/signed-builder.cjs --publish never
+      - name: Prepare Mac notary key
+        if: matrix.platform == 'mac'
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY || secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+          MAC_CERT_SHA256: ${{ vars.MAC_CERT_SHA256 || secrets.MAC_CERT_SHA256 }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID || secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER || secrets.APPLE_API_ISSUER }}
+        run: node ../packaging/signing-preflight.cjs --platform=mac --candidate --prepare-mac
+      - name: Sign and notarize Mac app, ZIP and final DMG
+        if: matrix.platform == 'mac'
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY || secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+          MAC_CERT_SHA256: ${{ vars.MAC_CERT_SHA256 || secrets.MAC_CERT_SHA256 }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID || secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER || secrets.APPLE_API_ISSUER }}
+        run: |
+          pnpm exec electron-builder --mac --${{ matrix.arch }} --config ../packaging/signed-builder.cjs --publish never
+          node ../packaging/finalize-mac.cjs
+      - name: Package Linux
+        if: matrix.platform == 'linux'
+        run: pnpm exec electron-builder --linux --x64 --config ../packaging/signed-builder.cjs --publish never
+      - name: Stage final binary bytes
+        run: node scripts/stage-release.cjs --platform=${{ matrix.builder_platform }} --arch=${{ matrix.arch }}
+      - name: Attest final installer bytes
+        id: provenance
+        uses: actions/attest@v4
+        with:
+          subject-checksums: src/windows-client/release/public/SHA256SUMS.txt
+      - name: Attach public attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: node -e "require('node:fs').copyFileSync(process.env.BUNDLE_PATH,'release/public/provenance.sigstore.json',require('node:fs').constants.COPYFILE_EXCL)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-${{ matrix.platform }}-${{ matrix.arch }}
+          path: src/windows-client/release/public/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove ephemeral Mac notary key
+        if: always() && matrix.platform == 'mac'
+        run: node ../packaging/cleanup-signing.cjs
+  accept:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+          - { os: macos-15-intel, platform: mac, arch: x64 }
+          - { os: windows-2022, platform: windows, arch: x64 }
+          - { os: windows-2022, platform: windows, arch: ia32 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      RECOVERY_SCOPE: ${{ inputs.recovery_scope }}
+      WINDOWS_PUBLISHER_NAME: ${{ vars.WINDOWS_PUBLISHER_NAME || secrets.WINDOWS_PUBLISHER_NAME }}
+      WINDOWS_CERT_SHA256: ${{ vars.WINDOWS_CERT_SHA256 || secrets.WINDOWS_CERT_SHA256 }}
+      APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY || secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+      MAC_CERT_SHA256: ${{ vars.MAC_CERT_SHA256 || secrets.MAC_CERT_SHA256 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          path: src
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-${{ matrix.platform }}-${{ matrix.arch }}
+          path: src/candidate
+      - name: Isolated installer GUI driver
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/installer-playwright"
+          cd "$RUNNER_TEMP/installer-playwright"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund --save-exact @playwright/test@1.63.0
+          echo "INSTALLER_PLAYWRIGHT_ROOT=$RUNNER_TEMP/installer-playwright" >> "$GITHUB_ENV"
+      - name: Linux installer GUI dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 xvfb
+      - name: Install, verify signatures and run recovery (Linux)
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a node packaging/verify-signed-candidate.cjs linux x64
+      - name: Install, verify signatures and run recovery (Mac/Windows)
+        if: matrix.platform != 'linux'
+        run: node packaging/verify-signed-candidate.cjs ${{ matrix.platform }} ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: accepted-${{ matrix.platform }}-${{ matrix.arch }}
+          path: src/candidate/*
+          if-no-files-found: error
+          retention-days: 14
+  candidate:
+    needs: accept
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      RECOVERY_SCOPE: ${{ inputs.recovery_scope }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: myelnn/recovery
+          ref: ${{ inputs.source_sha }}
+          path: src
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: accepted-*
+          path: src/accepted
+      - name: Enforce complete eight-package acceptance
+        working-directory: src
+        run: node packaging/collect-signed-candidate.cjs
+      - name: Bind final acceptance, private source SHA and final checksums
+        id: release_identity
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            src/signed-candidate/acceptance.json
+            src/signed-candidate/SHA256SUMS.txt
+      - name: Attach acceptance attestation
+        working-directory: src
+        env:
+          BUNDLE_PATH: ${{ steps.release_identity.outputs.bundle-path }}
+        run: node -e "require('node:fs').copyFileSync(process.env.BUNDLE_PATH,'signed-candidate/acceptance.sigstore.json',require('node:fs').constants.COPYFILE_EXCL)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-candidate-${{ inputs.release_version }}-${{ inputs.source_sha }}
+          path: src/signed-candidate/*
+          if-no-files-found: error
+          retention-days: 14
